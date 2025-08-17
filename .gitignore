@@ -1,0 +1,31 @@
+# env and secrets
+.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.uv/
+.ruff_cache/
+.pytest_cache/
+
+# data and models
+user_data/
+database_movielens/*.csv
+!database_movielens/sample/**
+bert_emotion_model/
+*.pt
+*.bin
+*.pth
+
+# notebooks
+.ipynb_checkpoints/
+
+# os/editor
+.DS_Store
+.vscode/
+.idea/
