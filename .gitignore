@@ -1,11 +1,11 @@
 # env and secrets
 .env
 .env.*
+.env.local
 
 # python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
 *.egg-info/
 .venv/
@@ -13,19 +13,28 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 
-# data and models
-user_data/
-database_movielens/*.csv
-!database_movielens/sample/**
-bert_emotion_model/
-*.pt
-*.bin
-*.pth
-
-# notebooks
-.ipynb_checkpoints/
-
-# os/editor
+# tooling / editors
 .DS_Store
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# node / build
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# datasets & large raw dumps
+imdb_data/
+*.tsv.gz
+user_data/
+
+# generated notebooks/assets
+.ipynb_checkpoints/
+
+# misc
+*.log

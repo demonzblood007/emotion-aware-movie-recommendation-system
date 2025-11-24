@@ -5,20 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dotenv>=0.9.9",
     "fastapi>=0.116.0",
-    "ipykernel>=6.29.5",
-    "langchain>=0.3.26",
-    "langchain-google-genai>=2.1.7",
-    "langchain-openai>=0.3.27",
-    "langgraph>=0.5.2",
-    "openai>=1.95.0",
+    "httpx>=0.27.2",
+    "numpy>=1.26.0",
     "pandas",
-    "pip>=25.1.1",
-    "psycopg2-binary",
-    "requests",
-    "sqlalchemy",
-    "streamlit>=1.46.1",
+    "pydantic-settings>=2.6.1",
     "torch>=2.7.1",
     "transformers>=4.53.3",
     "uvicorn>=0.35.0",

@@ -1,16 +1,14 @@
+import os
+
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset
-from transformers import BertTokenizer, BertModel
-from transformers.modeling_outputs import SequenceClassifierOutput
-import numpy as np
-from tqdm import tqdm
-import os
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 
-
-
+# Default Hugging Face checkpoint used for emotion detection.
+DEFAULT_EMOTION_MODEL_ID = "SamLowe/roberta-base-go_emotions"
 # Define emotion to genre mapping
 emotion_to_genres = {
     "joy": {
@@ -133,40 +131,15 @@ emotion_to_genres = {
 
 
 # Define paths to saved models and data
-EMOTION_MODEL_PATH = "./bert_emotion_model"
+EMOTION_MODEL_PATH = DEFAULT_EMOTION_MODEL_ID
 MOVIE_MODEL_PATH = "./best_model.pt"
-MOVIE_DATA_PATH = "./filtered_data.csv"
+MOVIE_DATA_PATH = "./database_movielens/filtered_data.csv"
+TRAINED_NUM_USERS = None
+TRAINED_NUM_MOVIES = None
 
-movies_df = pd.read_csv('movies.csv')  # make sure path is correct
+movies_df = pd.read_csv('./database_movielens/movies.csv')  # make sure path is correct
 movie_id_to_title = dict(zip(movies_df['movieId'], movies_df['title']))
 
-
-# Define the emotion detection model class (BERT-based)
-class BertForMultiLabelClassification(nn.Module):
-    def __init__(self, num_labels):
-        super().__init__()
-        self.bert = BertModel.from_pretrained("bert-base-uncased")
-       
-        self.dropout = nn.Dropout(0.1)
-        self.classifier = nn.Linear(self.bert.config.hidden_size, num_labels)
-
-    def forward(self, input_ids, attention_mask=None, labels=None):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.pooler_output
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-
-        loss = None
-        if labels is not None:
-            loss_fct = nn.BCEWithLogitsLoss()
-            loss = loss_fct(logits, labels)
-
-        return SequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
 
 # Define the movie recommender model
 class RecommenderModel(nn.Module):
@@ -239,29 +212,41 @@ def process_genres(genres_str, genre_map):
     return genre_vector
 
 # Load the emotion detection model
-def load_emotion_model(model_path):
-    print("Loading emotion detection model...")
-    
-    # Load the tokenizer
-    tokenizer = BertTokenizer.from_pretrained(model_path)
-    
+def load_emotion_model(model_path: str | None):
+    """
+    Load a multi-label emotion classifier.
 
-    
-    # Get emotion labels from Go Emotions dataset
-    from datasets import load_dataset
-    dataset = load_dataset("go_emotions")
-    emotion_labels = dataset["train"].features["labels"].feature.names
-    num_labels = len(emotion_labels)
-    
-    # Initialize and load the model
+    Args:
+        model_path: Hugging Face model id or local directory.
+
+    Returns:
+        Tuple[model, tokenizer, label_names, device]
+    """
+    model_source = model_path or DEFAULT_EMOTION_MODEL_ID
+    print(f"Loading emotion detection model from: {model_source}")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_source)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_source, problem_type="multi_label_classification"
+    )
+
+    id2label = getattr(model.config, "id2label", None)
+    if isinstance(id2label, dict) and id2label:
+        try:
+            sorted_keys = sorted(
+                id2label.keys(),
+                key=lambda k: int(k) if isinstance(k, str) and k.isdigit() else k,
+            )
+        except TypeError:
+            sorted_keys = list(id2label.keys())
+        emotion_labels = [id2label[key] for key in sorted_keys]
+    else:
+        emotion_labels = [f"label_{idx}" for idx in range(model.config.num_labels)]
+
     device = torch.device("cpu")
-    model = BertForMultiLabelClassification(num_labels=num_labels)
-    
-    # Load the saved model weights
-    model.load_state_dict(torch.load(os.path.join(model_path, "pytorch_model.bin"), map_location=device))
     model.to(device)
     model.eval()
-    
+
     return model, tokenizer, emotion_labels, device
 
 # Load the movie recommendation model
@@ -269,19 +254,47 @@ def load_movie_model(model_path, num_users, num_movies, num_genres):
     print("Loading movie recommendation model...")
     
     device = torch.device("cpu")
-    model = RecommenderModel(num_users, num_movies, num_genres)
+    saved_state = torch.load(model_path, map_location=device)
+
+    state_dict = saved_state
+    if isinstance(state_dict, dict) and not any(
+        key.endswith("user_embedding.weight") for key in state_dict.keys()
+    ):
+        for candidate in ("state_dict", "model_state_dict"):
+            if candidate in state_dict and isinstance(state_dict[candidate], dict):
+                state_dict = state_dict[candidate]
+                break
+
+    user_weight_key = next(
+        (k for k in state_dict.keys() if k.endswith("user_embedding.weight")), None
+    )
+    movie_weight_key = next(
+        (k for k in state_dict.keys() if k.endswith("movie_embedding.weight")), None
+    )
+    if user_weight_key is None or movie_weight_key is None:
+        raise KeyError("Embedding weights not found in checkpoint")
+
+    user_emb_weight = state_dict[user_weight_key]
+    movie_emb_weight = state_dict[movie_weight_key]
+    saved_num_users = user_emb_weight.shape[0]
+    saved_num_movies = movie_emb_weight.shape[0]
+
+    model = RecommenderModel(saved_num_users, saved_num_movies, num_genres)
+    global TRAINED_NUM_USERS, TRAINED_NUM_MOVIES
+    TRAINED_NUM_USERS = saved_num_users
+    TRAINED_NUM_MOVIES = saved_num_movies
     
     # Handle DataParallel wrapping if present in saved model
-    state_dict = torch.load(model_path, map_location=device)
-    if all(k.startswith('module.') for k in state_dict.keys()):
+    filtered_state_dict = state_dict
+    if all(k.startswith('module.') for k in filtered_state_dict.keys()):
         # Remove 'module.' prefix from keys
-        state_dict = {k[7:]: v for k, v in state_dict.items()}
+        filtered_state_dict = {k[7:]: v for k, v in filtered_state_dict.items()}
     
-    model.load_state_dict(state_dict)
+    model.load_state_dict(filtered_state_dict)
     model.to(device)
     model.eval()
     
-    return model
+    return model, saved_num_users, saved_num_movies
 
 # Predict emotions from text
 def predict_emotions(text, model, tokenizer, emotion_labels, device, top_k=3):
@@ -391,8 +404,12 @@ def recommend_movies(user_id, genre_vector, movie_model, data, genre_map, top_n=
     
     # Get all movies to evaluate
     all_movies = data[['movie_idx', 'movieId', 'genres']].drop_duplicates('movie_idx')
+    if TRAINED_NUM_MOVIES is not None:
+        all_movies = all_movies[all_movies['movie_idx'] < TRAINED_NUM_MOVIES]
     
     # Convert user_id to tensor and expand to match the number of movies
+    if TRAINED_NUM_USERS is not None and user_id >= TRAINED_NUM_USERS:
+        user_id = 0
     user_tensor = torch.tensor([user_id] * len(all_movies), dtype=torch.long).to(device)
     movie_tensor = torch.tensor(all_movies['movie_idx'].values, dtype=torch.long).to(device)
     
